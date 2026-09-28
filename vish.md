@@ -619,34 +619,57 @@ The browser is an untrusted display terminal. The server owns identity, ownershi
 
 ## What changed (files)
 
-**Server**
-- `server/config/security.config.js` **(new)** — single source of truth: rate limits, space/attempt allowlists + bounds, game-type list, body/context limits, CORS policy, and the pure `findJwtSecretDefect()` policy (missing / forbidden default / <32 chars / placeholder).
-- `server/middleware/security.middleware.js` — shared in-memory store with one `unref`'d sweeper; `Retry-After` header on every 429; `loginRateLimit()` (per-IP 30/15min **and** per-email 10/15min, keys contain **no URL** so path-varying cannot bypass; account bucket counts identically whether or not the account exists); `registerRateLimit()` (per-IP 30/h); `verifyNovaContext()` NOVA trust boundary (strips `userId/ownerId/accountId/user` from body and context, verifies space/world ownership fail-closed 403 / 404 when not found, overrides space `name`/`subject` from DB, drops ids of non-ObjectId local/seed references so they stay display-only).
-- `server/middleware/validation.middleware.js` **(new)** — tiny reusable `validate(chains)` pipeline: runs express-validator chains, rejects with 400 + a safe client-facing message.
-- `server/routes/auth.routes.js` — login/register validation (register: name 1–100, valid email, password 8–128 (bcrypt DoS bound); login: presence/type only so every existing account keeps working) + both limiters, rate limit **before** validation.
-- `server/routes/learningSpace.routes.js` — PUT allowlist validator: unknown keys → 400 `Field not allowed: <key>`; name/subject/description string + length checks with `.trim()`.
-- `server/routes/game.routes.js` — attempt validator on both attempt routes: allowlist reject, `game` ∈ 8 modalities, `correct`/`hintUsed` strict booleans, numeric bounds, `.toFloat()/.toInt()` normalization.
-- `server/controllers/game.controller.js` — attempt result rebuilt explicitly from validated fields only (defense in depth).
-- `server/controllers/learningSpace.controller.js` — explicit allowlist extraction + `runValidators: true` (never spreads `req.body`).
-- `server/controllers/auth.controller.js` — anti-enumeration: when no user matches, a bcrypt compare of equal cost still runs (timing parity); identical 401 body for wrong-password and missing-account.
-- `server/middleware/error.middleware.js` — stacks/details only when `NODE_ENV === 'development'`; 500 messages masked otherwise; stack still logged server-side.
-- `server/server.js` — **fail-fast** `findJwtSecretDefect()` before anything else (prints generation hint, `exit(1)`); security headers (`nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `X-Permitted-Cross-Domain-Policies: none`, HSTS in production only); CORS via optional `CORS_ORIGIN` (dev permissive, production fail-closed to same-origin when unset); explicit `express.json({ limit: '100kb' })`; NOVA route = `protect → novaLimiter → validate(novaRules) → verifyNovaContext → handler`.
+> Every file Phase 1 touched, and what it was modified for. Commits: `e277d34` (25 files) + `4908538` (this log).
 
-**Client**
-- `src/services/api.js` — error taxonomy: network failure → `null` (offline fallback preserved); **401 → clears token + fires the registered unauthorized handler + throws `ApiError(status)`**; **403 → throws with session preserved**; all other non-OK → throws with the server's safe message. `setUnauthorizedHandler()` exported.
-- `src/services/v2storage.js` — per-user keys `cognix_v2:<userId>` (anon: `cognix_v2:anon`); pure `spacesKey`, `userIdFromToken` (base64url decode, corrupt input → null), `setActiveUser`, `dropLegacyGlobalSpaces`. Logout/401 **detach** the namespace (owner's cache survives under their key; nothing is erased, nothing is inherited).
-- `src/App.jsx` — module-scope namespace seeded from stored token before first paint; legacy key dropped at boot; unauthorized handler registered before the boot `getMe` (clears user + detaches namespace + resets to anon seed, no protected UI rendered); `setActiveUser` wired into boot/login/logout; every previously-swallowing catch now surfaces 403 (and non-401 errors) via `notify()` while offline still falls back locally.
-- `.env.example` + `README.md` — default secret removed everywhere; `JWT_SECRET=` empty placeholder + generation command (`node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`); `CORS_ORIGIN` documented.
+### Modified files (16)
 
-**Tests (new foundation, `package.json` → `"test": "node --test --test-concurrency=1 \"tests/*.test.mjs\""`)**
-- `tests/helpers/server.mjs` — spawn/stop a real server (own port, test DB, test secret), `runServerToExit()` (scratch cwd so no `.env` can mask a missing secret), fetch/register/create helpers.
-- `tests/security.config.test.mjs` — JWT policy matrix + allowlist/limit invariants (10 tests).
-- `tests/auth.test.mjs` — boot fails with missing/whitespace/default secret (exit≠0 + message), boot OK with strong secret, 401/403, login 429 + `Retry-After` ≤11 attempts, registration 400s, identical responses for wrong-password vs unknown-account (9 tests).
-- `tests/spaces.test.mjs` — owner allowlist update works; owner/userId change → 400 + unchanged; xp/level/streak/counters → 400 + unchanged; cross-user → 403; anonymous → 401; oversized/malformed → 400 (6 tests).
-- `tests/attempt.test.mjs` — forged `{correct, mastery, xp}` → 400 + XP/mastery unchanged; privilege-shaped fields → 400; out-of-range difficulty/confidence/seconds → 400; unknown game/non-boolean correct → 400; valid attempt records server-computed learnerDNA/decision/XP ≤ bound; cross-user → 403; anonymous → 401 (7 tests).
-- `tests/nova.test.mjs` — 401; cross-user space/world → 403; unknown space → 404; 6 malformed-shape 400s (incl. >1000-char query, non-object context, 21KB context); own-space → 200 reply; injected `userId/ownerId` in body+context cannot replace the JWT identity; 429 + `Retry-After` (8 tests).
-- `tests/storage.test.mjs` — key namespacing, anon fallback, A≠B isolation, anon inherits nothing, logout detach leaves owner cache intact, JWT decode edge cases (incl. corrupt input), legacy key dropped + never migrated, corrupt JSON → null (7 tests).
-- `tests/adaptive.test.mjs` — port of the verified Phase 0.5 adaptive script (10 tests / 19 checks) so the engine is guarded by `npm test` permanently.
+**Server — security boundaries**
+
+| File | What it was modified for |
+|---|---|
+| `server/server.js` | Fail-fast JWT-secret check before boot (exit 1 on missing/weak/default secret); security headers (nosniff, X-Frame-Options DENY, Referrer-Policy, HSTS in production only); CORS via `CORS_ORIGIN` (dev permissive, production fail-closed); explicit `express.json({ limit: '100kb' })`; NOVA route reordered to `protect → limiter → validation → verifyNovaContext` |
+| `server/middleware/security.middleware.js` | Rewritten: shared rate-limit store with one unref'd sweeper + `Retry-After` on every 429; `loginRateLimit()` (per-IP + per-email, key contains no URL — cannot be path-bypassed); `registerRateLimit()`; `verifyNovaContext()` NOVA trust boundary (strips identity fields, verifies space/world ownership 403/404, server overrides space name/subject) |
+| `server/controllers/game.controller.js` | `submitGameAttempt` no longer passes `req.body` wholesale — result rebuilt from validated allowlisted fields only, so forged mastery/xp/level can never reach the adaptive engine or counters |
+| `server/controllers/learningSpace.controller.js` | `updateLearningSpace` no longer spreads `req.body` into Mongo — explicit allowlist extraction (`name/subject/description`) + `runValidators: true` (mass-assignment fix) |
+| `server/controllers/auth.controller.js` | Anti-enumeration login: equal-cost bcrypt compare when the account doesn't exist (timing parity) + identical 401 response for wrong-password vs missing-account |
+| `server/middleware/error.middleware.js` | Stack traces/details only when `NODE_ENV === 'development'` (was: everything except production); 500 messages masked otherwise; stack still logged server-side |
+| `server/routes/auth.routes.js` | Added express-validator rules (register: name/email/password 8–128; login: presence only so existing accounts keep working) + both rate limiters, limiter before validation |
+| `server/routes/game.routes.js` | Attempt validation on both attempt routes: allowlist reject → 400, `game` ∈ 8 modalities, strict booleans, numeric bounds, `.toFloat()/.toInt()` normalization |
+| `server/routes/learningSpace.routes.js` | PUT allowlist validator: unknown keys → `400 Field not allowed`, string/length checks with trim on `name/subject/description` |
+
+**Client — error taxonomy + storage isolation**
+
+| File | What it was modified for |
+|---|---|
+| `src/services/api.js` | 401/403 taxonomy replacing catch-everything→`null`: network → `null` (offline fallback kept); 401 → clear token + fire registered unauthorized handler + throw; 403 → throw with session preserved; other errors throw with server message; added `ApiError` + `setUnauthorizedHandler` |
+| `src/services/v2storage.js` | Global `cognix_v2` key replaced by per-user `cognix_v2:<userId>` (`:anon` fallback); added `spacesKey`, `userIdFromToken`, `setActiveUser`, `dropLegacyGlobalSpaces`; logout/401 detach instead of erase |
+| `src/App.jsx` | Module-scope namespace seeded from token + legacy key drop at boot; unauthorized handler registered before boot `getMe` (safe unauthenticated screen, no protected UI); `setActiveUser` on boot/login/logout; every swallowing `catch` now surfaces 403/non-401 errors via `notify()` (offline fallbacks kept) |
+
+**Docs / config**
+
+| File | What it was modified for |
+|---|---|
+| `.env.example` | Usable default secret `gamelearn_secret_key_mvp_2026` removed → empty `JWT_SECRET=` + generation command; `CORS_ORIGIN` added |
+| `README.md` | Same secret removal in env docs + generation instructions + `CORS_ORIGIN` explanation |
+| `package.json` | Added only the `"test"` script (`node --test`) — no dependency changes |
+| `vish.md` | Phase 1 record (contract, vulnerabilities, per-file changes, verification, limitations, commits) + Phase 0.5/1 roadmap rows fixed — commit `4908538` |
+
+### New files (10)
+
+| File | Purpose |
+|---|---|
+| `server/config/security.config.js` | Single source of truth: rate limits, space/attempt allowlists + bounds, game types, body limits, CORS policy, pure `findJwtSecretDefect()` policy |
+| `server/middleware/validation.middleware.js` | Tiny reusable `validate(chains)` pipeline over `express-validator` (already a dependency) |
+| `tests/helpers/server.mjs` | Spawns an isolated server per test file (own port/DB/test secret), startup-failure runner, API helpers |
+| `tests/security.config.test.mjs` | JWT policy matrix + allowlist/limit invariants |
+| `tests/auth.test.mjs` | Startup failure ×3, strong-secret boot, 401/403, login 429 + Retry-After, register 400s, anti-enumeration |
+| `tests/spaces.test.mjs` | Mass-assignment: owner allowlist works; owner/xp/counter injection → 400 unchanged; cross-user → 403 |
+| `tests/attempt.test.mjs` | Forged attempt → 400 + state unchanged; bounds; cross-user → 403; valid attempt server-recording |
+| `tests/nova.test.mjs` | 401, cross-user space/world → 403, malformed → 400, identity injection ignored, 429 + Retry-After |
+| `tests/storage.test.mjs` | Per-user key isolation, anon fallback, logout detach, legacy-key drop, JWT decode edges |
+| `tests/adaptive.test.mjs` | Port of the verified Phase 0.5 adaptive checks (19 checks) into `npm test` |
+
+**Not touched:** `.env` (gitignored, local only), models, game/adaptive engine logic, DB schema, `AuthScreen.jsx` (already displayed server errors); no dependencies added/removed.
 
 ## Verification results (§12 — every item, actually run)
 
