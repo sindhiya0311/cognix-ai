@@ -128,9 +128,13 @@ export const createLearningSpace = async (req, res, next) => {
 
 export const updateLearningSpace = async (req, res, next) => {
   try {
-    const space = await LearningSpace.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const space = await LearningSpace.findById(req.params.id);
     if (!space) return res.status(404).json({ success: false, message: 'Learning space not found' });
-    res.json({ success: true, data: space });
+    if (space.userId && space.userId.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized to modify this learning space' });
+    }
+    const updatedSpace = await LearningSpace.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json({ success: true, data: updatedSpace });
   } catch (error) {
     next(error);
   }
@@ -138,8 +142,13 @@ export const updateLearningSpace = async (req, res, next) => {
 
 export const deleteLearningSpace = async (req, res, next) => {
   try {
-    const space = await LearningSpace.findByIdAndDelete(req.params.id);
+    const space = await LearningSpace.findById(req.params.id);
     if (!space) return res.status(404).json({ success: false, message: 'Learning space not found' });
+    if (space.userId && space.userId.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized to delete this learning space' });
+    }
+
+    await LearningSpace.findByIdAndDelete(req.params.id);
 
     await World.deleteMany({ learningSpaceId: req.params.id });
     await Syllabus.deleteMany({ learningSpaceId: req.params.id });

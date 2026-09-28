@@ -6,6 +6,10 @@ import { calculateLearnerDNA } from '../services/learnerDNA.service.js';
 export const getLearnerProfile = async (req, res, next) => {
   try {
     const { spaceId } = req.params;
+    const space = await LearningSpace.findById(spaceId);
+    if (!space || (space.userId && space.userId.toString() !== req.user.id)) {
+      return res.status(403).json({ success: false, message: 'Not authorized to access learner profile for this space' });
+    }
     let profile = await LearnerProfile.findOne({ learningSpaceId: spaceId });
     if (!profile) {
       const worlds = await World.find({ learningSpaceId: spaceId });
@@ -25,8 +29,11 @@ export const getLearnerProfile = async (req, res, next) => {
 export const getLearnerDNA = async (req, res, next) => {
   try {
     const { spaceId } = req.params;
-    const worlds = await World.find({ learningSpaceId: spaceId });
     const space = await LearningSpace.findById(spaceId);
+    if (!space || (space.userId && space.userId.toString() !== req.user.id)) {
+      return res.status(403).json({ success: false, message: 'Not authorized to access learner DNA for this space' });
+    }
+    const worlds = await World.find({ learningSpaceId: spaceId });
     const dna = calculateLearnerDNA(worlds);
 
     res.json({

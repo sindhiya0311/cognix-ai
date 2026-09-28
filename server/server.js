@@ -3,6 +3,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { connectDB } from './config/db.js';
 import { errorHandler } from './middleware/error.middleware.js';
+import { protect } from './middleware/auth.middleware.js';
+import { rateLimit, validateNovaInput } from './middleware/security.middleware.js';
 
 import authRoutes from './routes/auth.routes.js';
 import learningSpaceRoutes from './routes/learningSpace.routes.js';
@@ -31,8 +33,9 @@ app.get('/api/health', (req, res) => {
   res.json({ success: true, message: 'GameLearn API is running' });
 });
 
-// AI Nova Mentor Route
-app.post('/api/nova/ask', async (req, res, next) => {
+// AI Nova Mentor Route — rate limited + validated
+const novaLimiter = rateLimit({ windowMs: 60000, maxRequests: 20, message: 'NOVA rate limit exceeded. Please wait a moment.' });
+app.post('/api/nova/ask', protect, novaLimiter, validateNovaInput, async (req, res, next) => {
   try {
     const { context, query, space, world, decision } = req.body;
     const fullContext = context || { learningSpace: space, world, decision };
@@ -48,7 +51,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/spaces', learningSpaceRoutes);
 app.use('/api', syllabusRoutes);
 app.use('/api', worldRoutes);
-app.use('/api', gameRoutes);
+app.use('/api', rateLimit({ windowMs: 60000, maxRequests: 30, message: 'Game API rate limit exceeded.' }), gameRoutes);
 app.use('/api', learnerRoutes);
 app.use('/api', analyticsRoutes);
 app.use('/api', resourceRoutes);

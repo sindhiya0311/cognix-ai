@@ -5,7 +5,7 @@ export function checkProgression(worlds) {
   return worlds.map((world, index) => {
     const isUnlocked = index === 0 || previousMastered;
     const isMastered = (world.mastery || 0) >= 0.72;
-    previousMastered = (world.mastery || 0) >= 0.70;
+    previousMastered = (world.mastery || 0) >= 0.72;
 
     let status = 'LOCKED';
     if (isMastered) status = 'MASTERED';

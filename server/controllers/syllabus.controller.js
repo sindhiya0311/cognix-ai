@@ -11,6 +11,9 @@ export const saveSyllabus = async (req, res, next) => {
 
     const space = await LearningSpace.findById(spaceId);
     if (!space) return res.status(404).json({ success: false, message: 'Learning Space not found' });
+    if (space.userId && space.userId.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized to modify this syllabus' });
+    }
 
     let structuredSyllabus;
 
@@ -65,7 +68,11 @@ export const parseSyllabusFile = async (req, res, next) => {
   try {
     const { spaceId } = req.params;
     const space = await LearningSpace.findById(spaceId);
-    const spaceName = space ? space.name : 'Custom Course';
+    if (!space) return res.status(404).json({ success: false, message: 'Learning Space not found' });
+    if (space.userId && space.userId.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized to access this space' });
+    }
+    const spaceName = space.name;
 
     let text = req.body.rawText || '';
 
@@ -82,6 +89,10 @@ export const parseSyllabusFile = async (req, res, next) => {
 
 export const getSyllabus = async (req, res, next) => {
   try {
+    const space = await LearningSpace.findById(req.params.spaceId);
+    if (!space || (space.userId && space.userId.toString() !== req.user.id)) {
+      return res.status(403).json({ success: false, message: 'Not authorized to access this syllabus' });
+    }
     const syllabus = await Syllabus.findOne({ learningSpaceId: req.params.spaceId });
     if (!syllabus) return res.status(404).json({ success: false, message: 'Syllabus not found' });
     res.json({ success: true, data: syllabus });

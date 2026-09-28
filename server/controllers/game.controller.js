@@ -16,6 +16,9 @@ export const startGameSession = async (req, res, next) => {
     if (!world) return res.status(404).json({ success: false, message: 'World not found' });
 
     const space = await LearningSpace.findById(world.learningSpaceId);
+    if (!space || (space.userId && space.userId.toString() !== req.user.id)) {
+      return res.status(403).json({ success: false, message: 'Not authorized to start a game session in this space' });
+    }
     const decision = decideNextActivity(space, world);
     const activeGameType = requestedGame || decision.game;
 
@@ -54,6 +57,11 @@ export const getGameChallenge = async (req, res, next) => {
     const world = await World.findOne({ topicId: worldId }) || await World.findById(worldId);
     if (!world) return res.status(404).json({ success: false, message: 'World not found' });
 
+    const space = await LearningSpace.findById(world.learningSpaceId);
+    if (!space || (space.userId && space.userId.toString() !== req.user.id)) {
+      return res.status(403).json({ success: false, message: 'Not authorized to get challenges in this space' });
+    }
+
     const challenge = await generateGameContentAI(world, gameType || 'quiz', Number(difficulty) || 1);
     res.json({ success: true, data: challenge });
   } catch (error) {
@@ -79,6 +87,9 @@ export const submitGameAttempt = async (req, res, next) => {
 
     if (!world || !space) {
       return res.status(404).json({ success: false, message: 'Space or World context not found' });
+    }
+    if (space.userId && space.userId.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized to submit attempt in this space' });
     }
 
     const previousMastery = world.mastery || 0;

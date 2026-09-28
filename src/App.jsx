@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { DEMO_SYLLABUS, makeWorlds, worldGames, GAME_LABELS, GAME_ICONS } from "./data/v2data.js";
 import { loadSpaces, saveSpaces } from "./services/v2storage.js";
-import { decideNext, applyGameResult, misconception, signalsFor } from "./adaptive/v2engine.js";
+import { decideNextActivity as decideNext, applyGameResult, misconception, signalsForWorld as signalsFor } from "./shared/domain/adaptive.js";
 import { apiSpaces, apiSyllabus, apiGame, apiResources, apiNova, apiAuth, setAuthToken } from "./services/api.js";
 import { GameWorldMap } from "./components/GameWorldMap.jsx";
 import { AuthScreen } from "./components/AuthScreen.jsx";

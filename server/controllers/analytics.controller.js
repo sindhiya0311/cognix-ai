@@ -1,9 +1,14 @@
 import World from '../models/World.js';
 import GameAttempt from '../models/GameAttempt.js';
+import LearningSpace from '../models/LearningSpace.js';
 
 export const getAnalyticsBySpace = async (req, res, next) => {
   try {
     const { spaceId } = req.params;
+    const space = await LearningSpace.findById(spaceId);
+    if (!space || (space.userId && space.userId.toString() !== req.user.id)) {
+      return res.status(403).json({ success: false, message: 'Not authorized to view analytics for this space' });
+    }
     const worlds = await World.find({ learningSpaceId: spaceId });
     const attempts = await GameAttempt.find({ learningSpaceId: spaceId });
 

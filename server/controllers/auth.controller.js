@@ -2,7 +2,8 @@ import User from '../models/User.js';
 import jwt from 'jsonwebtoken';
 
 const generateToken = (id) => {
-  const secret = process.env.JWT_SECRET || 'gamelearn_secret_key_mvp_2026';
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET environment variable is not set');
   return jwt.sign({ id }, secret, { expiresIn: '30d' });
 };
 
@@ -62,13 +63,6 @@ export const loginUser = async (req, res, next) => {
 
 export const getMe = async (req, res, next) => {
   try {
-    if (req.user.isGuest) {
-      return res.json({
-        success: true,
-        data: { _id: req.user.id, name: 'Demo Learner', email: 'demo@gamelearn.ai', isGuest: true }
-      });
-    }
-
     const user = await User.findById(req.user.id).select('-passwordHash');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
