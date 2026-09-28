@@ -1,0 +1,66 @@
+COURSE: 24CS502 - WEB TECHNOLOGIES
+
+UNIT I: HTML 5, CSS 3, JAVASCRIPT
+- HTML5
+- Tables
+- Lists
+- Image
+- HTML5 control elements
+- Drag and Drop
+- Audio
+- Video controls
+- CSS3
+- Inline style sheets
+- Embedded style sheets
+- External style sheets
+- Rule cascading
+- Inheritance
+- JavaScript DOM Model
+- Exception Handling
+- Validation
+- Built-in objects
+- Event Handling
+
+UNIT II: SERVER SIDE PROGRAMMING
+- Java Servlet Architecture
+- Servlet Life Cycle
+- Form GET and POST actions
+- Session Handling Techniques
+- Hidden Fields
+- URL rewriting
+- Cookies
+- Sessions
+- JDBC
+
+UNIT III: PHP
+- Introduction to PHP
+- Using PHP
+- Variables
+- Program Control
+- Built-in functions
+- Form Validation
+- Regular Expressions
+- File Handling
+- Cookies
+- Connecting to Database
+
+UNIT IV: XML AND AJAX
+- Basic XML
+- DTD
+- XML Schema
+- XML Validation
+- XSL
+- XSLT Transformation
+- AJAX Client Server Architecture
+- XMLHttpRequest Object
+- Callback Methods
+
+UNIT V: INTRODUCTION TO REACT
+- Introduction to ReactJS
+- Building Your First React App
+- JSX
+- Components
+- Styling in React
+- CSS
+- Complex Components
+- Transferring Properties
