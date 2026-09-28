@@ -72,7 +72,20 @@ export const getGameChallenge = async (req, res, next) => {
 export const submitGameAttempt = async (req, res, next) => {
   try {
     const { sessionId } = req.params;
-    const result = req.body;
+    // Defense in depth: the route validation only admits allowlisted fields;
+    // here we rebuild the result object explicitly so nothing else (mastery,
+    // xp, level, identity...) can ever reach the adaptive engine or counters.
+    const result = {
+      spaceId: req.body.spaceId,
+      worldId: req.body.worldId,
+      game: req.body.game,
+      correct: req.body.correct,
+      confidence: typeof req.body.confidence === 'number' ? req.body.confidence : undefined,
+      seconds: typeof req.body.seconds === 'number' ? req.body.seconds : 5,
+      difficulty: typeof req.body.difficulty === 'number' ? req.body.difficulty : 1,
+      hintUsed: req.body.hintUsed === true,
+      id: typeof req.body.id === 'string' ? req.body.id : undefined
+    };
 
     let session;
     if (sessionId && sessionId !== 'direct') {

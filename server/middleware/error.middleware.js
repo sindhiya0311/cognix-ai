@@ -22,16 +22,19 @@ export const errorHandler = (err, req, res, next) => {
     statusCode = 400;
   }
 
-  const isProduction = process.env.NODE_ENV === 'production';
+  // Details are exposed only for an explicit NODE_ENV=development (set it
+  // locally when you need stacks). Unset/production never return stacks.
+  const exposeDetails = process.env.NODE_ENV === 'development';
 
   console.error(`[Error] ${req.method} ${req.originalUrl} → ${statusCode}: ${err.message}`);
-  if (!isProduction) {
+  if (exposeDetails && err.stack) {
     console.error(err.stack);
   }
 
+  const shouldMask = statusCode === 500 && !exposeDetails;
   res.status(statusCode).json({
     success: false,
-    message: isProduction && statusCode === 500 ? 'Internal Server Error' : err.message,
-    stack: isProduction ? undefined : err.stack
+    message: shouldMask ? 'Internal Server Error' : err.message,
+    stack: exposeDetails ? err.stack : undefined
   });
 };

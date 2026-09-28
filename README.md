@@ -115,8 +115,13 @@ Copy `.env.example` to `.env`:
 # Server Configuration
 PORT=5000
 MONGODB_URI=mongodb://localhost:27017/gamelearn
-JWT_SECRET=gamelearn_secret_key_mvp_2026
+# REQUIRED — generate a strong secret; the server refuses to start without one:
+#   node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+JWT_SECRET=
 GEMINI_API_KEY=your_gemini_api_key_here
+# Optional: comma-separated allowed browser origins (production defaults to
+# same-origin only when unset)
+CORS_ORIGIN=
 
 # Client Configuration
 VITE_API_URL=http://localhost:5000/api

@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { DEMO_SYLLABUS, makeWorlds, worldGames, GAME_LABELS, GAME_ICONS } from "./data/v2data.js";
-import { loadSpaces, saveSpaces } from "./services/v2storage.js";
+import { loadSpaces, saveSpaces, setActiveUser, userIdFromToken, dropLegacyGlobalSpaces } from "./services/v2storage.js";
 import { decideNextActivity as decideNext, applyGameResult, misconception, signalsForWorld as signalsFor } from "./shared/domain/adaptive.js";
-import { apiSpaces, apiSyllabus, apiGame, apiResources, apiNova, apiAuth, setAuthToken } from "./services/api.js";
+import { apiSpaces, apiSyllabus, apiGame, apiResources, apiNova, apiAuth, setAuthToken, setUnauthorizedHandler } from "./services/api.js";
 import { GameWorldMap } from "./components/GameWorldMap.jsx";
 import { AuthScreen } from "./components/AuthScreen.jsx";
 import { CustomSpaceSelect } from "./components/ui/Select.jsx";
@@ -37,6 +37,12 @@ function seedSpace() {
   return s;
 }
 
+// Phase 1 storage isolation: scope the local cache to whoever is signed in
+// (namespace seeded from the stored token before first paint) and drop the
+// legacy global cache, whose ownership cannot be proven.
+setActiveUser(userIdFromToken(localStorage.getItem("cognix_token")));
+dropLegacyGlobalSpaces();
+
 function App() {
   const [user, setUser] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
@@ -58,14 +64,35 @@ function App() {
   const [noteText, setNoteText] = useState("");
   const [boss, setBoss] = useState(null);
 
+  // 401 from an active session → clear auth state and land on a safe
+  // unauthenticated screen instead of rendering protected data.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setUser(null);
+      setActiveUser(null);      // detach: the account's cache stays under its own key
+      setSpaceId(null);
+      setSpaces([seedSpace()]); // saved under the anonymous key from now on
+      setPage("spaces");
+      notify("Session expired. Please sign in again.");
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
   // Authentication check on startup
   useEffect(() => {
     apiAuth.getMe().then(res => {
       if (res?.success && res?.data) {
         setUser(res.data);
+        setActiveUser(res.data._id); // authoritative cache namespace for this account
         fetchRemoteSpaces();
       }
-    }).catch(() => {}).finally(() => {
+      // A 401 here (missing/invalid token) is not an error: it is the normal
+      // signed-out path, already handled by setUnauthorizedHandler above.
+    }).catch(() => {
+      // Offline/unexpected boot failure: there is no session to restore.
+      // A 401 caused by an active-but-invalid token was already handled by
+      // setUnauthorizedHandler (clears auth state, safe transition).
+    }).finally(() => {
       setAuthChecked(true);
     });
   }, []);
@@ -86,7 +113,11 @@ function App() {
           setSpaceId(formatted[0].id);
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      if (e?.status === 403) notify("You are not authorized to load that learning space.");
+      // 401 is handled globally by setUnauthorizedHandler; offline requests
+      // return null above and keep the local cache.
+    }
   };
 
   useEffect(() => saveSpaces(spaces), [spaces]);
@@ -98,14 +129,21 @@ function App() {
 
   const handleLogout = () => {
     setAuthToken(null);
+    setActiveUser(null); // detach this account's cached state (stays under cognix_v2:<id>)
     setUser(null);
-    setSpaces([seedSpace()]);
+    setSpaceId(null);
+    setSpaces([seedSpace()]); // anonymous safe state → saved under the anonymous key
     notify("Logged out");
   };
 
   const createSpace = async () => {
     const s = blankSpace(newName.trim() || "Untitled Learning Space");
-    const remote = await apiSpaces.createSpace(s.name, s.name);
+    let remote = null;
+    try {
+      remote = await apiSpaces.createSpace(s.name, s.name);
+    } catch (err) {
+      if (err?.status && err.status !== 401) notify(err.message || "Could not create the space on the server");
+    }
     const finalSpace = remote ? { ...s, ...remote, id: remote._id || s.id, worlds: remote.worlds || s.worlds } : s;
     setSpaces(a => [finalSpace, ...a]);
     setSpaceId(finalSpace.id);
@@ -116,7 +154,9 @@ function App() {
   };
 
   const deleteSpace = async id => {
-    await apiSpaces.deleteSpace(id).catch(() => {});
+    await apiSpaces.deleteSpace(id).catch(err => {
+      if (err?.status && err.status !== 401) notify(err.message || "Could not delete the space on the server");
+    });
     setSpaces(all => {
       const filtered = all.filter(s => s.id !== id);
       return filtered.length ? filtered : [seedSpace()];
@@ -159,7 +199,11 @@ function App() {
       } catch (e) {}
     }
 
-    const remoteRes = await apiSyllabus.renderSyllabus(space.id, syllabusFile?.name || `${space.name} Syllabus`, units, rawContent);
+    const remoteRes = await apiSyllabus.renderSyllabus(space.id, syllabusFile?.name || `${space.name} Syllabus`, units, rawContent)
+      .catch(err => {
+        if (err?.status && err.status !== 401) notify(err.message || "Could not render the syllabus on the server");
+        return null;
+      });
     const finalWorlds = remoteRes?.worlds && remoteRes.worlds.length ? remoteRes.worlds.map(w => ({ ...w, id: w._id || w.id || w.topicId })) : makeWorlds(units, space.name);
     
     updateSpace(s => ({
@@ -202,7 +246,11 @@ function App() {
       return s;
     });
 
-    const remoteData = await apiGame.submitAttempt(space.id, selectedWorld, result).catch(() => null);
+    const remoteData = await apiGame.submitAttempt(space.id, selectedWorld, result).catch(err => {
+      if (err?.status === 403) notify("Attempt rejected: you are not authorized for this learning space.");
+      else if (err?.status && err.status !== 401) notify(err.message || "Attempt could not be synced");
+      return null;
+    });
     if (remoteData?.space || remoteData?.world) {
       updateSpace(s => ({
         ...s,
@@ -252,7 +300,11 @@ function App() {
     try {
       const remoteReply = await apiNova.askContextual(activeContext, q);
       if (remoteReply) { setNovaReply(remoteReply); setIsNovaThinking(false); return; }
-    } catch (e) {}
+    } catch (e) {
+      if (e?.status === 403) notify("Nova can't access that learning space.");
+      // 401 is handled globally; other failures fall through to the local
+      // keyword fallback below (offline resilience preserved).
+    }
 
     const taskCtx = window.__currentTaskContext;
     if ((q.toLowerCase().includes("why") || q.toLowerCase().includes("wrong") || q.toLowerCase().includes("mistake")) && taskCtx?.learnerAnswer) {
@@ -274,7 +326,12 @@ function App() {
   if (!authChecked) return null;
 
   if (!user) {
-    return <AuthScreen onAuthenticated={(authedUser) => { setUser(authedUser); fetchRemoteSpaces(); }} />;
+    return <AuthScreen onAuthenticated={(authedUser) => {
+      setUser(authedUser);
+      setActiveUser(authedUser._id);      // switch cache namespace to this account
+      setSpaces(loadSpaces() || [seedSpace()]);
+      fetchRemoteSpaces();
+    }} />;
   }
 
   if (!space) return null;
@@ -932,7 +989,12 @@ function Notes({ space, update, text, setText, notify }) {
     if (!text.trim()) return;
     setIsSaving(true);
     const newNote = { name: title.trim() || "Note", type: "text", text: text.trim() };
-    const saved = await apiResources.addResource(space.id, newNote);
+    let saved = null;
+    try {
+      saved = await apiResources.addResource(space.id, newNote);
+    } catch (err) {
+      if (err?.status && err.status !== 401) notify(err.message || "Could not save the note on the server");
+    }
     const finalNote = saved ? { ...newNote, ...saved, id: saved._id || saved.id } : { ...newNote, id: uid() };
     update(s => ({ ...s, notes: [finalNote, ...(s.notes || [])] }));
     setText("");
@@ -947,7 +1009,12 @@ function Notes({ space, update, text, setText, notify }) {
     reader.onload = async () => {
       const fileContent = String(reader.result).slice(0, 5000);
       const newNote = { name: f.name, type: f.type || "file", text: fileContent };
-      const saved = await apiResources.addResource(space.id, newNote);
+      let saved = null;
+      try {
+        saved = await apiResources.addResource(space.id, newNote);
+      } catch (err) {
+        if (err?.status && err.status !== 401) notify(err.message || "Could not upload the file on the server");
+      }
       const finalNote = saved ? { ...newNote, ...saved, id: saved._id || saved.id } : { ...newNote, id: uid() };
       update(s => ({ ...s, notes: [finalNote, ...(s.notes || [])] }));
       notify(`Uploaded ${f.name} and indexed for AI context`);

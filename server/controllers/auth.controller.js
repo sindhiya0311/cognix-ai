@@ -1,10 +1,21 @@
 import User from '../models/User.js';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
 const generateToken = (id) => {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error('JWT_SECRET environment variable is not set');
   return jwt.sign({ id }, secret, { expiresIn: '30d' });
+};
+
+// Anti-enumeration: when no user matches the submitted email we still perform
+// a bcrypt comparison of equal cost, so response timing does not reveal
+// whether an account exists.
+let dummyHashPromise = null;
+const timeComparableReject = async (password) => {
+  dummyHashPromise = dummyHashPromise || bcrypt.hash('cognix-timing-equalizer', 10);
+  const dummyHash = await dummyHashPromise;
+  await bcrypt.compare(password, dummyHash);
 };
 
 export const registerUser = async (req, res, next) => {
@@ -43,7 +54,14 @@ export const loginUser = async (req, res, next) => {
     }
 
     const user = await User.findOne({ email });
-    if (user && (await user.matchPassword(password))) {
+    let passwordMatches = false;
+    if (user) {
+      passwordMatches = await user.matchPassword(password);
+    } else {
+      await timeComparableReject(password);
+    }
+
+    if (user && passwordMatches) {
       const token = generateToken(user._id);
       res.json({
         success: true,
@@ -54,6 +72,8 @@ export const loginUser = async (req, res, next) => {
         message: 'Login successful'
       });
     } else {
+      // Identical response whether the account is missing or the password is
+      // wrong — never reveal which one failed.
       res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
   } catch (error) {

@@ -3,6 +3,31 @@ import { loadSpaces as getLocalSpaces, saveSpaces as setLocalSpaces } from './v2
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 let token = localStorage.getItem('cognix_token') || null;
+let unauthorizedHandler = null;
+
+/**
+ * HTTP-layer error carrying the response status so callers can distinguish:
+ *   401 → authentication failed (auth state already cleared by request()),
+ *   403 → authenticated but not authorized (session preserved — surface it),
+ *   other → ordinary failures with the server's safe message preserved.
+ * Network/unreachable failures do NOT throw: they return null so the
+ * existing offline/local-cache fallback keeps working.
+ */
+export class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+/**
+ * Registered by the app to transition into a safe unauthenticated state
+ * when the server rejects an otherwise-active session (401).
+ */
+export const setUnauthorizedHandler = (fn) => {
+  unauthorizedHandler = fn;
+};
 
 export const setAuthToken = (t) => {
   token = t;
@@ -17,18 +42,42 @@ async function request(endpoint, options = {}) {
     ...options.headers
   };
 
+  let res;
   try {
-    const res = await fetch(`${API_BASE}${endpoint}`, {
+    res = await fetch(`${API_BASE}${endpoint}`, {
       ...options,
       headers
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'API Request Failed');
-    return data;
   } catch (err) {
-    console.warn(`[API Fallback] Endpoint ${endpoint} unreachable: ${err.message}. Using local storage fallback.`);
+    // Offline/unreachable: preserved fallback behaviour — callers may use
+    // their local cache. Authentication failures never arrive via this path.
+    console.warn(`[API Offline] Endpoint ${endpoint} unreachable: ${err.message}. Using local storage fallback where supported.`);
     return null;
   }
+
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* non-JSON body */
+  }
+
+  if (res.ok) return data;
+
+  const message = (data && typeof data.message === 'string' && data.message)
+    || `Request failed (${res.status})`;
+
+  if (res.status === 401) {
+    const hadSession = !!token;
+    if (hadSession) {
+      setAuthToken(null);       // clear invalid auth state
+      unauthorizedHandler?.();  // transition to a safe unauthenticated state
+    }
+    throw new ApiError(message, 401);
+  }
+
+  // 403 keeps the session; every caller surfaces it instead of swallowing it.
+  throw new ApiError(message, res.status);
 }
 
 // Authentication API
@@ -59,6 +108,9 @@ export const apiSpaces = {
     if (res?.success && res?.data) {
       return res.data;
     }
+    // Network/empty → local cache (offline resilience).
+    // 401/403 throw before reaching this line: never fall back to local data
+    // while unauthenticated or unauthorized.
     return getLocalSpaces();
   },
   createSpace: async (name, subject = 'Programming', description = '') => {

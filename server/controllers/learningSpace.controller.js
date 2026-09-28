@@ -133,7 +133,18 @@ export const updateLearningSpace = async (req, res, next) => {
     if (space.userId && space.userId.toString() !== req.user.id) {
       return res.status(403).json({ success: false, message: 'Not authorized to modify this learning space' });
     }
-    const updatedSpace = await LearningSpace.findByIdAndUpdate(req.params.id, req.body, { new: true });
+
+    // Explicit allowlist extraction — never spread req.body into a Mongo update.
+    // Ownership, progression, XP, counters and timestamps are server-controlled.
+    const updates = {};
+    if (req.body.name !== undefined) updates.name = req.body.name;
+    if (req.body.subject !== undefined) updates.subject = req.body.subject;
+    if (req.body.description !== undefined) updates.description = req.body.description;
+
+    const updatedSpace = Object.keys(updates).length > 0
+      ? await LearningSpace.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true })
+      : space;
+
     res.json({ success: true, data: updatedSpace });
   } catch (error) {
     next(error);
