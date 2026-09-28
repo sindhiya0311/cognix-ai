@@ -44,8 +44,8 @@
 | Phase | Scope | Status |
 |---|---|---|
 | Phase 0 | Production baseline + deep repository audit | ✅ Complete (this document) |
-| Phase 0.5 | Commit & runtime-verify the inherited uncommitted security work | ⬜ Not started |
-| Phase 1 | Security + authorization hardening | ⬜ Not started |
+| Phase 0.5 | Commit & runtime-verify the inherited uncommitted security work | ✅ Complete (`a68b41b`, `ebf6633`) |
+| Phase 1 | Security + authorization hardening + minimal test foundation | ✅ Complete (`e277d34`) |
 | Phase 2 | Server-authoritative state | ⬜ Not started |
 | Phase 3 | Adaptive engine consolidation | ⬜ Not started |
 | Phase 4 | Learning evidence | ⬜ Not started |
@@ -581,3 +581,145 @@ helmet/CSP · CORS restriction · auth-endpoint rate limiting · production JWT 
 - **This log update:** committed separately immediately after (hash recorded in the Phase 0.5 final report).
 
 *Phase 0.5 complete. Verified over real HTTP, committed, logged. Phase 1 may begin only when its prompt is provided.*
+
+---
+
+# PHASE 1 — SECURITY HARDENING + MINIMAL TEST FOUNDATION
+
+**Status:** ✅ Complete — implemented, verified over real HTTP + a real browser, committed.
+**Code commit:** `e277d34` — `security: harden authentication and learning boundaries` (25 files, +1696/−99)
+**Log commit:** committed separately immediately after this section was written.
+**Scope:** exactly the 10 areas of the Phase 1 prompt. Nothing else was implemented (server-authoritative redesign remains Phase 2).
+
+## Security contract (CLIENT-IS-UNTRUSTED)
+
+The browser is an untrusted display terminal. The server owns identity, ownership, correctness, mastery, XP, progression, unlocks and learner state **wherever those values are already server-computable**. Client input is admitted only through explicit allowlists with hard bounds; anything else is rejected with 400/401/403. Identity always comes from the verified JWT — never from a request body, a localStorage key, or a client-decoded id. The client-side JWT decode (`userIdFromToken`) is a **cache-namespace hint only** and is never used for authorization.
+
+## Assumptions (recorded before implementation)
+
+- All 8 game modalities score **client-side** (content lives in client banks), so `correct` stays client-asserted in Phase 1 — the prompt explicitly allows this, with server-authoritative grading as Phase 2 work.
+- The attempt allowlist is exactly: `spaceId, worldId, game, correct, confidence, seconds, difficulty, hintUsed, id, timestamp`; bounds: `difficulty 1..4`, `confidence 0..1`, `seconds 0..3600`.
+- The space PUT allowlist is exactly: `name, subject, description` (no UI calls this endpoint, so strict 400 on unknown keys breaks nothing).
+- `express-validator` v7.3.2 is already installed → used as the validation layer (zero new dependencies).
+- Tests use Node 22's built-in `node --test` (zero new dependencies), one server process + port per file (5101–5104), dedicated DB `cognix_phase1_test`, dedicated test JWT secret. No test touches the dev server, dev DB, or any real credential.
+- The legacy `cognix_v2` localStorage key is **dropped, never migrated**: its ownership cannot be proven, and migrating it would recreate the cross-user leak.
+
+## Vulnerabilities found (each confirmed by reading committed code before fixing)
+
+1. `submitGameAttempt` passed `const result = req.body` wholesale into the adaptive engine and XP/streak counters → forged `mastery`/`xp`/`difficulty` were accepted (`server/controllers/game.controller.js`).
+2. No rate limiting on `POST /auth/login|register` → unlimited password guessing and bulk account creation.
+3. JWT secret checked only at token-issuance time → server booted fine with the documented default secret (`gamelearn_secret_key_mvp_2026` present in `.env.example:4` and `README.md:118`).
+4. `updateLearningSpace` = `findByIdAndUpdate(req.params.id, req.body)` → mass assignment (owner change, XP/counter injection).
+5. Global localStorage key `cognix_v2` shared by every account on the device → cross-user data leakage (B saw A's spaces after login).
+6. `api.js` `request()` caught **all** errors → `null`; 401/403 were silently swallowed and callers fell back to local cache as if authorized.
+7. NOVA endpoint trusted `req.body.context` as-is → no space/world ownership check, identity fields accepted from the client, server-owned space name/subject not enforced; `LearningContextService` (canonical context) does not exist yet (deferred).
+8. `cors()` fully permissive, no security headers, default body limit, error stacks returned whenever `NODE_ENV !== 'production'` (i.e. by default in dev).
+9. No input validation on login/register/space-update/attempt/NOVA (only a minimal pre-existing NOVA query check).
+10. No tests and no test runner → none of the above had a regression guard.
+
+## What changed (files)
+
+**Server**
+- `server/config/security.config.js` **(new)** — single source of truth: rate limits, space/attempt allowlists + bounds, game-type list, body/context limits, CORS policy, and the pure `findJwtSecretDefect()` policy (missing / forbidden default / <32 chars / placeholder).
+- `server/middleware/security.middleware.js` — shared in-memory store with one `unref`'d sweeper; `Retry-After` header on every 429; `loginRateLimit()` (per-IP 30/15min **and** per-email 10/15min, keys contain **no URL** so path-varying cannot bypass; account bucket counts identically whether or not the account exists); `registerRateLimit()` (per-IP 30/h); `verifyNovaContext()` NOVA trust boundary (strips `userId/ownerId/accountId/user` from body and context, verifies space/world ownership fail-closed 403 / 404 when not found, overrides space `name`/`subject` from DB, drops ids of non-ObjectId local/seed references so they stay display-only).
+- `server/middleware/validation.middleware.js` **(new)** — tiny reusable `validate(chains)` pipeline: runs express-validator chains, rejects with 400 + a safe client-facing message.
+- `server/routes/auth.routes.js` — login/register validation (register: name 1–100, valid email, password 8–128 (bcrypt DoS bound); login: presence/type only so every existing account keeps working) + both limiters, rate limit **before** validation.
+- `server/routes/learningSpace.routes.js` — PUT allowlist validator: unknown keys → 400 `Field not allowed: <key>`; name/subject/description string + length checks with `.trim()`.
+- `server/routes/game.routes.js` — attempt validator on both attempt routes: allowlist reject, `game` ∈ 8 modalities, `correct`/`hintUsed` strict booleans, numeric bounds, `.toFloat()/.toInt()` normalization.
+- `server/controllers/game.controller.js` — attempt result rebuilt explicitly from validated fields only (defense in depth).
+- `server/controllers/learningSpace.controller.js` — explicit allowlist extraction + `runValidators: true` (never spreads `req.body`).
+- `server/controllers/auth.controller.js` — anti-enumeration: when no user matches, a bcrypt compare of equal cost still runs (timing parity); identical 401 body for wrong-password and missing-account.
+- `server/middleware/error.middleware.js` — stacks/details only when `NODE_ENV === 'development'`; 500 messages masked otherwise; stack still logged server-side.
+- `server/server.js` — **fail-fast** `findJwtSecretDefect()` before anything else (prints generation hint, `exit(1)`); security headers (`nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `X-Permitted-Cross-Domain-Policies: none`, HSTS in production only); CORS via optional `CORS_ORIGIN` (dev permissive, production fail-closed to same-origin when unset); explicit `express.json({ limit: '100kb' })`; NOVA route = `protect → novaLimiter → validate(novaRules) → verifyNovaContext → handler`.
+
+**Client**
+- `src/services/api.js` — error taxonomy: network failure → `null` (offline fallback preserved); **401 → clears token + fires the registered unauthorized handler + throws `ApiError(status)`**; **403 → throws with session preserved**; all other non-OK → throws with the server's safe message. `setUnauthorizedHandler()` exported.
+- `src/services/v2storage.js` — per-user keys `cognix_v2:<userId>` (anon: `cognix_v2:anon`); pure `spacesKey`, `userIdFromToken` (base64url decode, corrupt input → null), `setActiveUser`, `dropLegacyGlobalSpaces`. Logout/401 **detach** the namespace (owner's cache survives under their key; nothing is erased, nothing is inherited).
+- `src/App.jsx` — module-scope namespace seeded from stored token before first paint; legacy key dropped at boot; unauthorized handler registered before the boot `getMe` (clears user + detaches namespace + resets to anon seed, no protected UI rendered); `setActiveUser` wired into boot/login/logout; every previously-swallowing catch now surfaces 403 (and non-401 errors) via `notify()` while offline still falls back locally.
+- `.env.example` + `README.md` — default secret removed everywhere; `JWT_SECRET=` empty placeholder + generation command (`node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`); `CORS_ORIGIN` documented.
+
+**Tests (new foundation, `package.json` → `"test": "node --test --test-concurrency=1 \"tests/*.test.mjs\""`)**
+- `tests/helpers/server.mjs` — spawn/stop a real server (own port, test DB, test secret), `runServerToExit()` (scratch cwd so no `.env` can mask a missing secret), fetch/register/create helpers.
+- `tests/security.config.test.mjs` — JWT policy matrix + allowlist/limit invariants (10 tests).
+- `tests/auth.test.mjs` — boot fails with missing/whitespace/default secret (exit≠0 + message), boot OK with strong secret, 401/403, login 429 + `Retry-After` ≤11 attempts, registration 400s, identical responses for wrong-password vs unknown-account (9 tests).
+- `tests/spaces.test.mjs` — owner allowlist update works; owner/userId change → 400 + unchanged; xp/level/streak/counters → 400 + unchanged; cross-user → 403; anonymous → 401; oversized/malformed → 400 (6 tests).
+- `tests/attempt.test.mjs` — forged `{correct, mastery, xp}` → 400 + XP/mastery unchanged; privilege-shaped fields → 400; out-of-range difficulty/confidence/seconds → 400; unknown game/non-boolean correct → 400; valid attempt records server-computed learnerDNA/decision/XP ≤ bound; cross-user → 403; anonymous → 401 (7 tests).
+- `tests/nova.test.mjs` — 401; cross-user space/world → 403; unknown space → 404; 6 malformed-shape 400s (incl. >1000-char query, non-object context, 21KB context); own-space → 200 reply; injected `userId/ownerId` in body+context cannot replace the JWT identity; 429 + `Retry-After` (8 tests).
+- `tests/storage.test.mjs` — key namespacing, anon fallback, A≠B isolation, anon inherits nothing, logout detach leaves owner cache intact, JWT decode edge cases (incl. corrupt input), legacy key dropped + never migrated, corrupt JSON → null (7 tests).
+- `tests/adaptive.test.mjs` — port of the verified Phase 0.5 adaptive script (10 tests / 19 checks) so the engine is guarded by `npm test` permanently.
+
+## Verification results (§12 — every item, actually run)
+
+| Check | Result |
+|---|---|
+| lint/typecheck | **N/A** — repo has neither; nothing to run (documented, not skipped silently) |
+| New automated tests (`npm test`) | **58/58 PASS** (run twice, final run after all edits) |
+| Existing adaptive tests | **19/19 PASS** (Phase 0.5 script) — also ported into `tests/adaptive.test.mjs` |
+| Existing API tests vs hardened server | **50/50 PASS** (`phase05_tests.mjs` against restarted dev backend; NOVA cross-user expectation deliberately strengthened from “no leak” to **403**) |
+| Production build (`npm run build`) | ✅ clean, no errors/warnings |
+| Boot WITH secure JWT | ✅ health 200 on `:5000` (dev server restarted onto new code) + test server boots |
+| Boot WITHOUT valid JWT | ✅ `exit 1` in 3 variants (missing, whitespace, documented default) — asserted by tests |
+| Cross-user / authz tests | ✅ GET/PUT/DELETE space, attempts, NOVA space+world, worlds → 401/403/404 as specified |
+| Auth rate limit | ✅ login → 429 + `Retry-After` within 11 attempts; register limiter wired |
+| NOVA authz + rate limit | ✅ 401/403/404/400 + 429 with `Retry-After` |
+| Forged attempt | ✅ 400, XP/mastery unchanged, bounds enforced |
+| Mass assignment | ✅ 400 + value unchanged; cross-user write 403 |
+| localStorage isolation | ✅ unit tests + full browser cycle (below) |
+| Basic E2E flow | ✅ browser run on isolated origin `127.0.0.1:5175` (your `localhost:5173` session untouched) |
+| Manual git diff review | ✅ default secret appears only as **removals** (and as the `JWT_SECRET_FORBIDDEN` rejection entry); `.env` not tracked; no dependency changes (only the `test` script); no debug bypasses/backdoors; untracked additions are exactly the intended 3 paths |
+
+**Browser E2E details (isolated origin, fresh accounts):**
+1. Planted a fake legacy `cognix_v2` key → reload → **dropped**, session restored.
+2. Logged out existing session → token cleared, `cognix_v2:anon` = seed only, owner’s `cognix_v2:<id>` intact.
+3. Registered user B → B’s namespace seeded; B saw **only** seed/server data (A’s “Web Technologies” never appeared — the original leak scenario, now closed).
+4. Created “IsoB Space” as B → stored **only** under B’s key.
+5. Played a quiz → attempt reached the server: **XP 20, streak 1, world mastery 0.17775** (server formula), 1 validated history record, adaptive rotation to Flashcards returned by the server.
+6. NOVA “How am I doing?” → 200 reply with server-verified space context.
+7. Logout → B’s cache survived detach; re-login as B → same namespace restored; A’s key still had only its own space at every step.
+8. Corrupted the token → reload → 401 handler cleared the token, safe auth screen, no protected UI, no crash.
+
+## Commands used
+
+```bash
+npm test                # node --test, 8 files, 58 checks — PASS
+node <temp>/phase05_tests.mjs     # 50/50 PASS vs hardened server
+node <temp>/phase05_adaptive.mjs  # 19/19 PASS
+npm run build           # clean
+node server/server.js   # with secure JWT → boots; without → exit 1 (tested)
+git diff / status / log # manual review before commit
+```
+
+## Remaining limitations (deliberate, with reasons)
+
+- **`correct` is still client-asserted** — all modalities score in the browser (content lives client-side). The boundary is now a strict allowlist + hard bounds + privilege-payload rejection; server-side grading lands with the Phase 2 server-authoritative redesign. XP/mastery are computed **server-side** from validated inputs, never read from the client.
+- **NOVA learner stats remain client-advisory** — identity/ownership/authorization are now server-enforced (JWT + space/world ownership + server-owned name/subject). Canonical server-derived context (mastery/progression derivation) is the Phase 7 `LearningContextService`; building it now would violate the Phase 1 “no premature architecture” instruction.
+- **Rate limits are in-memory, single process** (documented since Phase 0.5; Redis-backed limits later). The generic game/content limiter still keys per-user/IP **+ URL** (path-varying can evade that one bucket) — unchanged deliberately per “do not rewrite the entire limiter”; the **auth** limiters are URL-independent and cannot be bypassed that way.
+- **CSP deferred** — a strict CSP breaks Vite dev (HMR websocket, inline styles); low-risk headers shipped instead. CSP revisit when a production frontend build strategy exists.
+- **Legacy `cognix_v2` cache is dropped without migration** — its owner is unknowable; migrating would recreate the leak. Users see server data (server is authoritative) after login.
+- **Register still returns “user already exists”** (pre-existing UX contract) — login-side enumeration is closed (identical response + timing parity); the rate limiters themselves never depend on account existence.
+- **JWT rotation procedure** not implemented — only generation + startup enforcement (prompt scope). Error stacks now require explicit `NODE_ENV=development`.
+- Still deferred from Phase 0.5’s list and not in Phase 1 scope: structured logging, helmet/CSP (see above), offline sync, quest persistence, routing/App refactor, DB redesign.
+
+## Completion checklist
+
+- [x] Read `vish.md` before any change (Rule 1)
+- [x] Git state inspected before editing (`ebf6633`, clean, synced with origin)
+- [x] All 10 prompt areas implemented; nothing outside scope
+- [x] `npm test` foundation added — **58/58 PASS**
+- [x] Existing adaptive (19/19) + API (50/50) regression suites rerun against hardened code
+- [x] Production build clean
+- [x] Boot success (secure JWT) and boot failure (missing/weak/default JWT) both runtime-proven
+- [x] Cross-user, rate-limit, NOVA, forged-attempt, mass-assignment, localStorage tests all pass
+- [x] Basic E2E learning flow executed in a real browser on an isolated origin
+- [x] Manual git diff inspection: no secrets committed, `.env` untracked, no unrelated package changes, no debug bypasses
+- [x] Default secret absent from `.env.example`/`README`; generation instructions present; forbidden value rejected at startup
+- [x] Committed: `e277d34` — `security: harden authentication and learning boundaries`
+- [x] This `vish.md` section added; stale Phase 0.5 roadmap row fixed
+- [!] *Blocked items: none.*
+
+## Commit
+
+- **Code:** `e277d34` — `security: harden authentication and learning boundaries` (25 files, +1696/−99)
+- **This log update:** committed separately immediately after (hash recorded in the Phase 1 final report).
+
+*Phase 1 complete. All 10 areas implemented and proven by tests + runtime verification. Phase 2 (server-authoritative adaptive redesign) starts only when its prompt is provided.*
