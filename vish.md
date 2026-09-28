@@ -482,3 +482,102 @@ Phase 0.5 commit+runtime-verify → 1 Security (+ minimal test harness) → 2 Se
 ---
 
 *Baseline complete. Understood first. Changed nothing. The good is preserved on record; the rest awaits Phase 1.*
+
+---
+
+# PHASE 0.5 — COMMIT + RUNTIME VERIFICATION
+
+**Date:** 2026-09-28 · **Branch:** `vish` · **Status:** COMPLETE (all checklist items PASS)
+
+## Scope
+Read `vish.md` first (Rule 1 ✓). Inspected git state without discarding anything. Set up runtime environment, boot-verified backend and frontend, and exercised the inherited uncommitted security/architecture work over real HTTP: auth, ownership, NOVA, rate limits, adaptive engine, and the full learner flow. **No Phase 1 features implemented** (no helmet/CSP/CORS hardening, no mass-assignment fix, no server-authoritative correctness, no RAG, no NOVA tools, no quest persistence, no routing, no offline queue, no DB redesign, no package changes, no application-code changes). Nothing discarded; no secrets committed; the documented default JWT secret was not used anywhere.
+
+## Git Baseline
+- **Base:** `f6ff39d` "Initial Cognix full-stack implementation" (HEAD before this phase).
+- **Working tree at start (all inherited from the prior session):** 15 modified files (8 controllers, 2 middleware, `server.js`, 3 services, `src/App.jsx`), 18 deleted V1 files (`src/adaptive/*`, 11 components, 4 services), 4 untracked (`COGNIX_PRODUCTION_CHANGELOG.md`, `server/middleware/security.middleware.js`, `src/shared/`, `vish.md`).
+- **Classification:** every changed file is part of the prior session's coherent security/architecture work; only `vish.md` was created by this assistant (Phase 0). No unrelated or accidental changes found.
+- **Secrets scan:** diff + untracked files scanned for API keys/URIs/credentials — clean. `gamelearn_secret_key_mvp_2026` appears only (a) as a **removal** in `auth.middleware.js` (fallback deleted, now requires env var) and (b) as audit documentation in this file. `.env` is gitignored and was **not** committed.
+- **Critical discovery:** HEAD ≠ running behavior. The pre-existing dev server (started 10:26:18, before working-tree files were modified up to 11:52:48) served **pre-change code** — it answered `200` to unauthenticated `POST /api/nova/ask` and `GET /api/spaces`. A stale process was masking the inherited work; verification required restarting from the current tree.
+- **Commit:** `a68b41b06acb6dfee00a295c0478a6e16282eda2` — `chore: establish verified Cognix production baseline` — 37 files changed, +997 / −1440. A fresh clone now receives the ownership checks, protected NOVA, rate limiters, and required-JWT-secret behavior.
+
+## Runtime Environment
+- Windows, Node **v22.19.0**, npm **10.9.3**; lockfile v3; all dependencies resolvable (express, mongoose, jsonwebtoken, bcryptjs, cors, dotenv, pdf-parse, express-validator, vite, react) — **no install/upgrade performed**.
+- MongoDB **mongod listening on 27017** (present in environment).
+- **`.env` created (gitignored, 10 vars):** `PORT=5000`; `MONGODB_URI=mongodb://localhost:27017/cognix_phase05_verify` (isolated scratch DB so verification never touches any existing data); `JWT_SECRET=` a **48-char random value — explicitly NOT** the documented default; `OPENROUTER_API_KEY`/`GEMINI_API_KEY` empty (AI runs keyword-fallback = degraded mode, as designed); `VITE_API_URL=http://localhost:5000/api`.
+- **Stale processes** (backend PID 7000, Vite PID 8644, concurrently PID 13836 — all started 10:26:18, serving pre-change code) were stopped and the backend/frontend restarted from the current working tree.
+- **Backend boot:** `injected env (10) from .env` → `MongoDB Connected: localhost` → `listening on port 5000`; health `GET /api/health` → **200**. One pre-existing Mongoose warning: `errors` is a reserved schema pathname (`LearnerProfile`) — non-blocking, documented.
+- **Frontend boot:** `npm run client` → Vite v5.4.21 ready in 1952 ms, **HTTP 200**; UI loads with no runtime exceptions. A second Vite bound to `127.0.0.1:5175` (separate origin = isolated localStorage) was used for the UI flow test so the user's live `localhost:5173` session was never touched; it was stopped and removed afterwards.
+- **Degraded mode documented:** no AI keys → NOVA and AI content answer via keyword fallback (still authenticated, validated, rate-limited).
+
+## Tests Performed
+1. Git inspection (status/diff/classification/secrets scan). 2. Env + dependency verification. 3. Server boot + health. 4. Frontend boot + page load (browser). 5. Auth flow with test users A and B. 6. Ownership matrix (GET/PUT/DELETE + child resources) with actual HTTP codes. 7. NOVA security (auth, validation, rate limit, cross-user leak probe). 8. Game API rate limit (forgeable correctness deliberately **not** touched). 9. Adaptive engine rules (recovery/challenge/guided/boss) as unit checks against `src/shared/domain/adaptive.js`. 10. Full basic user flow — API suite (50 checks) + complete UI walk-through. 11. Regression sweep (registration, login, spaces, world map, world detail, gameplay, attempt, learner state, recommendations, NOVA, notes, analytics). Test scripts live outside the repo (`C:\Users\SRIVI\AppData\Local\Temp\opencode\`).
+
+## Results
+
+### PASS — API suite: 50/50 (after correcting 2 wrong test expectations; see Issues #3, and note below)
+| Area | Actual HTTP results |
+|---|---|
+| Health | `GET /api/health` → **200** |
+| Register A / B | **201** + token each; Login A/B → **200**; wrong password → **401**; `/auth/me` with token → **200**, no token → **401**, garbage token → **401** |
+| Fresh-server unauthenticated probes | NOVA → **401**, spaces → **401**, game challenge → **401**, analytics → **401**, learner → **401** (stale server had returned 200 — proof the inherited work works once actually run) |
+| Ownership space | B GET → **403** "Not authorized to access this learning space"; B PUT → **403**; B DELETE → **403**; anon → **401**; B's list excludes A's space |
+| Child resources (B on A's space) | worlds collection → **403**, world by id → **403**, unlock → **403**, game challenge → **403**, syllabus → **403**, analytics → **403**, learner → **403**, learner/dna → **403**, resources GET → **403**, resource DELETE → **403**; all A-side equivalents **200/201** (worlds generated on create: 3) |
+| Game attempts | A submit → **200** "Mastery updated cleanly" (200 by design); B into A's space → **403**; response includes `learnerDNA` + `nextDecision` |
+| NOVA | authenticated → **200** reply; 1500-char query → **400**; missing query → **400**; 429 within 25 rapid requests; B's reply contains **no leak** of A's server-side data |
+| Rate limits | fixed-URL burst → **429** (NOVA 20/min, game 30/min) |
+
+### PASS — Adaptive engine: 19/19
+Low accuracy + repeated errors → `mode: recovery` with difficulty lowered (3→2) and modality changed (quiz→match); high accuracy + fast → `challenge` (2→3, quiz→speed); recent miss → `guided` (modality rotation); no attempts → `normal` baseline "Start with a baseline check."; mastery 0.9 + 6 correct attempts → `bossReady: true`, mastery 0.4 → `false`; `applyGameResult` raises/lowers mastery correctly; history capped at 30; misconception detected after 2 errors; identical inputs → identical decisions (deterministic).
+
+### PASS — Full user flow (UI walk-through, isolated origin)
+Register → **Create Your DNA Account** submitted, logged in as "P05 UI Flow" → create space "Web Technologies" → **14 worlds + 5 syllabus units persisted server-side** → world map "Web Technologies Adventure Path" (Level 1, 0 XP, current quest HTML5 & Control Elements 0%, later worlds locked) → world detail **NEXT BEST ACTION: Quiz — "Start with a baseline check"** (Knowledge state NORMAL) → **game started** (quiz rendered, 4 options, Submit disabled until selection) → **answer submitted** → server persisted: `gamesCompleted 1`, `xp 20`, `streak 1`, world mastery `0 → 0.17775`, history entry recorded, `LearnerProfile` created (`accuracy 1, attempts 1, LOW`), `GET /learner` → **200** → UI state shows **mastery 18%** and **recommendation changed to ◇ Flashcards** ("Stable performance rotates the modality…", tagged "Adaptive next") → **NOVA asked and answered with context:** "For HTML5 & Control Elements, the adaptive engine selected quiz to reinforce your concept recall and accuracy." → **Notes page** renders (scoped to space) → **Analytics page** renders real data (Quiz: 1 attempt, 100% accuracy) → boss gate visible ("Reach 72% mastery… 🔒 Boss locked"). **Only console error in the whole session: the expected initial `/auth/me` 401 (no token yet).**
+
+### Regression — PASS
+Registration ✓ · login ✓ · spaces CRUD + ownership ✓ · world map ✓ · world detail ✓ · gameplay ✓ · attempt submission ✓ · learner state ✓ · recommendations ✓ · NOVA ✓ · notes/resources ✓ (API create/list/delete + UI page) · analytics ✓.
+
+### FAIL
+**None.** Two initial "failures" were wrong test expectations, not defects: (a) `submitGameAttempt` returns **200** (`res.json`) — my test wrongly expected 201; (b) the rate limiter's key is `` `${userId}:${req.originalUrl}` `` so *distinct* URLs get distinct buckets (see Issue 3); the same-URL probe correctly returned **429**.
+
+## Issues Discovered (documented, deliberately not fixed)
+1. **Stale dev processes served pre-change code** — an environment issue, not a code defect; resolved by restarting from the working tree. Lesson recorded: HEAD and running behavior diverged, so runtime verification must start its own processes.
+2. **Mongoose reserved-key warning:** `LearnerProfile.errors` schema path (pre-existing, non-blocking).
+3. **Rate limiter is per-URL keyed** (`` `${userId}:${originalUrl}` ``) — an attacker bypasses the cap by varying the path; additionally the limiter is mounted at `app.use('/api', ...)` so many non-game endpoints share the 30/min bucket. Inherited design; works as implemented (429 proven), redesign deferred to Phase 1.
+4. **NOVA context staleness:** the reply cited "quiz" while the current decision had rotated to flashcards — the known P1 *client-trusted context* (server echoes client-supplied decision). Deferred to Phase 7 (canonical context), flagged earlier in Phase 0.
+5. **Fresh accounts get the local seed space** ("Programming", localStorage) alongside/instead of server spaces when the server list is empty — the documented §12/§14 local-fallback behavior, observed live on a new account.
+6. **No `.env` existed** for the prior session's server (Phase 0 §10 blocker (b)) — now created (gitignored).
+7. **Prior changelog contradiction confirmed:** `COGNIX_PRODUCTION_CHANGELOG.md` claims "Phase 1 Implemented + Verified — Remaining work: None", yet HEAD shipped unauthenticated NOVA and no ownership checks; only the uncommitted tree had them. Changelog preserved as historical record; this file supersedes it.
+
+## Fixes Made (baseline-enablement only)
+1. Created `.env` (gitignored) — isolated scratch DB + **random** JWT secret (never the documented default) + empty AI keys for documented degraded mode.
+2. Stopped stale pre-change dev processes; booted backend and frontend from the current working tree.
+3. Spun up and tore down an isolated Vite instance (`127.0.0.1:5175`) for interference-free UI testing.
+- **No application code changed. No packages added/upgraded/removed. No Phase 1 features.**
+
+## Deferred To Phase 1
+helmet/CSP · CORS restriction · auth-endpoint rate limiting · production JWT secret rotation procedure (the documented default must be replaced everywhere) · mass-assignment fix on `PUT /spaces/:id` · `api.js` explicit 401/403 handling (stop swallowing) · rate-limiter key redesign (global per-user/IP bucket instead of per-URL) · express-validator wiring for input validation · error taxonomy / stack-trace exposure · structured logging · minimal test harness (inside Phase 1 per §18). **Phase 2:** server-authoritative attempt correctness (forgeable `correct` flag untouched, as instructed).
+
+## Completion Checklist
+- [x] Read `vish.md` before any change (Rule 1)
+- [x] Git state inspected; nothing discarded or reverted
+- [x] `.env` created with safe local values; documented default JWT secret **not** used
+- [x] No secrets in the commit (diff + untracked scanned; `.env` gitignored)
+- [x] Dependencies verified; no installs/upgrades
+- [x] Server boots; health endpoint **200**
+- [x] Frontend boots; UI loads without runtime exceptions
+- [x] Auth flow verified with two test users (201/200/401 as specified)
+- [x] Ownership GET/PUT/DELETE + child resources verified with actual status codes
+- [x] NOVA auth + rate limit verified
+- [x] Game API rate limit verified; forgeable correctness **not** modified
+- [x] Adaptive engine rules verified (recovery/challenge/boss)
+- [x] Full basic user flow executed end-to-end (API + UI)
+- [x] Regression check passed
+- [x] Baseline committed: `a68b41b06acb6dfee00a295c0478a6e16282eda2`
+- [x] This `vish.md` section added
+- [x] Degraded modes documented (no AI keys → fallback replies; MongoDB present → no degradation)
+- [!] *Blocked items: none.*
+
+## Commit
+- **Baseline:** `a68b41b06acb6dfee00a295c0478a6e16282eda2` — `chore: establish verified Cognix production baseline` (37 files, +997/−1440)
+- **This log update:** committed separately immediately after (hash recorded in the Phase 0.5 final report).
+
+*Phase 0.5 complete. Verified over real HTTP, committed, logged. Phase 1 may begin only when its prompt is provided.*
